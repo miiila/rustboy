@@ -6,13 +6,20 @@ use std::io::Read;
 use std::path::Path;
 
 mod cpu;
+mod ram;
+mod bus;
 
 
 fn main() {
     let rom_file_name = env::args().nth(1).unwrap();
     let rom = load_rom(rom_file_name);
+    let ram = ram::Ram::new();
+    let bus = bus::Bus::new(ram, rom);
     let mut cpu = cpu::Cpu::new();
-    println!("{:#x}", rom[0x134]);
+    cpu.connect_bus(bus);
+    cpu.run();
+    //cpu.run_next_instruction();
+    //cpu.run_next_instruction();
 }
 
 

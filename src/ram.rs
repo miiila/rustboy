@@ -1,15 +1,16 @@
-const CAPACITY: usize = 8 * 1024;
-
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct Ram {
-    ram: [u8; CAPACITY],
+    ram: Box<[u8]>
 }
 
 impl Ram {
 
-    pub fn new() -> Ram {
+    pub fn new(capacity: usize) -> Ram {
+        let mut ram = Vec::<u8>::with_capacity(capacity);
+        // TODO: Weird
+        ram.resize(capacity, 0);
         Ram {
-            ram: [0; CAPACITY],
+            ram: ram.into_boxed_slice(),
         }
     }
 
@@ -22,11 +23,11 @@ impl Ram {
     }
 }
 
-impl Default for Ram {
-    fn default() -> Self {
-        Ram {
-                ram: [0; CAPACITY],
-        }
-    }
-}
+//impl Default for Ram {
+    //fn default() -> Self {
+        //Ram {
+            //ram: Vec::with_capacity(capacity).into_boxed_slice(),
+        //}
+    //}
+//}
 

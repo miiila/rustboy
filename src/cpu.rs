@@ -3,7 +3,6 @@ use super::bus;
 
 #[derive(Debug, Default)]
 pub struct Cpu {
-
     bus: bus::Bus,
     reg_af: BitArray<u16, bitvec::order::Msb0>,
     reg_bc: BitArray<u16, bitvec::order::Msb0>,
@@ -12,6 +11,10 @@ pub struct Cpu {
     sp: u16,
     pc: u16,
     ime: bool,
+    clock_freq: u32,
+    div_cycles: u16,
+    timer_cycles: u32,
+    is_halted: bool,
     i: u64, //debug
 }
 
@@ -28,6 +31,8 @@ impl Cpu {
         cpu.reg_de.store_be(0x00D8);
         cpu.reg_hl.store_be(0x014D);
         cpu.ime = false;
+        cpu.clock_freq = 4194304;
+        cpu.is_halted = false;
         cpu.i = 1;
         cpu
     }
@@ -37,15 +42,17 @@ impl Cpu {
     } 
 
     pub fn run_next_instruction(&mut self) {
-        self.handle_interrupts();
         let inst = self.bus.read(self.pc);
-        self.perform_instruction(inst);
+        let cycles = if self.is_halted {4} else {self.perform_instruction(inst)};
+        self.handle_timer(cycles);
+        self.handle_interrupts();
     }
 
-    pub fn perform_instruction(&mut self, inst: u8) {
+    pub fn perform_instruction(&mut self, inst: u8) -> u8 {
         //println!("{}: Instruction 0x{:02X} @ {:#X}: A: {:02X}, F: {:02X}, B: {:02X}, C: {:02X}, D: {:02x}, E: {:02x}, H: {:02X}, L: {:02X}, SP: {:02X}", self.i, inst, self.pc, self.get_reg_a(), self.get_reg_f(), self.get_reg_b(), self.get_reg_c(), self.get_reg_d(), self.get_reg_e(), self.get_reg_h(), self.get_reg_l(), self.sp);
         // https://github.com/retrio/gb-test-roms/tree/master/cpu_instrs
         // CONSOLE OUTPUT
+        let mut cycles = 4;
         self.i += 1;
         if self.bus.read(0xff02) == 0x81 {
             print!("{}", self.bus.read(0xff01) as char);
@@ -54,14 +61,16 @@ impl Cpu {
         match inst {
             // SPECIAL
             0x00 => self.pc += 1,
-            0x76 => panic!("HALT INSTRUCTION"),
+            0x10 => {self.is_halted = true; self.pc += 1;},
+            0x76 => {self.is_halted = true; self.pc += 1;},
             0xCB => {
                 self.pc += 1;
-                self.perform_cb_instruction();
+                cycles = self.perform_cb_instruction();
                 self.pc += 1;
             },
             0xF3 => {
                 self.ime = false;
+                cycles = 8;
                 self.pc +=1;
             }
             0xFB => {
@@ -120,27 +129,33 @@ impl Cpu {
             0x01 => {
                 self.set_reg_bc(self.read_u16());
                 self.pc +=3;
+                cycles = 12;
             }
             0x11 => {
                 self.set_reg_de(self.read_u16());
                 self.pc +=3;
+                cycles = 12;
             }
             0x21 => {
                 self.set_reg_hl(self.read_u16());
                 self.pc +=3;
+                cycles = 12;
             }
             0x31 => {
                 self.sp = self.read_u16();
                 self.pc +=3;
+                cycles = 12;
             }
             0xF8 => {
                 let res = self.add_i16(self.sp as i16, self.bus.read(self.pc+1) as i8 as i16);
                 self.set_reg_hl(res as u16);
                 self.pc +=2;
+                cycles = 12;
             }
             0xF9 => {
                 self.sp = self.get_reg_hl();
                 self.pc +=1;
+                cycles = 8;
             }
             0x08 => {
                 let addr = self.read_u16();
@@ -148,71 +163,86 @@ impl Cpu {
                 self.bus.write(addr, lsb);
                 self.bus.write(addr+1, msb);
                 self.pc +=3;
+                cycles = 20;
             }
             0xEA => {
                 let addr = self.read_u16();
                 self.bus.write(addr, self.get_reg_a());
                 self.pc +=3;
+                cycles = 16;
             }
             // LD 8 bit
             0x02 => {
                 let addr = self.get_reg_bc();
                 self.bus.write(addr, self.get_reg_a());
                 self.pc +=1;
+                cycles = 8;
             }
             0x0A => {
                 let addr = self.get_reg_bc();
                 self.set_reg_a(self.bus.read(addr));
                 self.pc +=1;
+                cycles = 8;
             }
             0x06 => {
                 self.set_reg_b(self.bus.read(self.pc+1));
                 self.pc +=2;
+                cycles = 8;
             }
             0x16 => {
                 self.set_reg_d(self.bus.read(self.pc+1));
                 self.pc +=2;
+                cycles = 8;
             }
             0x26 => {
                 self.set_reg_h(self.bus.read(self.pc+1));
                 self.pc +=2;
+                cycles = 8;
             }
             0x36 => {
                 self.bus.write(self.get_reg_hl(), self.bus.read(self.pc+1));
                 self.pc +=2;
+                cycles = 12;
             }
             0x0E => {
                 self.set_reg_c(self.bus.read(self.pc+1));
                 self.pc +=2;
+                cycles = 8;
             }
             0x1E => {
                 self.set_reg_e(self.bus.read(self.pc+1));
                 self.pc +=2;
+                cycles = 8;
             }
             0x2E => {
                 self.set_reg_l(self.bus.read(self.pc+1));
                 self.pc +=2;
+                cycles = 8;
             }
             0x3E => {
                 self.set_reg_a(self.bus.read(self.pc+1));
                 self.pc +=2;
+                cycles = 8;
             }
             0x1A => {
                 let addr = self.get_reg_de();
                 self.set_reg_a(self.bus.read(addr));
                 self.pc +=1;
+                cycles = 8;
             }
             0x2A => {
                 let addr = self.get_reg_hl();
                 self.set_reg_a(self.bus.read(addr));
                 self.set_reg_hl(addr+1);
                 self.pc +=1;
+                cycles = 8;
             }
             0x3A => {
                 let addr = self.get_reg_hl();
                 self.set_reg_a(self.bus.read(addr));
                 self.set_reg_hl(addr-1);
                 self.pc +=1;
+                cycles = 8;
             }
             0x40 => {
                 self.set_reg_b(self.get_reg_b());
@@ -241,6 +271,7 @@ impl Cpu {
             0x46 => {
                 self.set_reg_b(self.bus.read(self.get_reg_hl()));
                 self.pc +=1;
+                cycles = 8;
             }
             0x47 => {
                 self.set_reg_b(self.get_reg_a());
@@ -273,6 +304,7 @@ impl Cpu {
             0x4E => {
                 self.set_reg_c(self.bus.read(self.get_reg_hl()));
                 self.pc +=1;
+                cycles = 8;
             }
             0x4F => {
                 self.set_reg_c(self.get_reg_a());
@@ -305,6 +337,7 @@ impl Cpu {
             0x56 => {
                 self.set_reg_d(self.bus.read(self.get_reg_hl()));
                 self.pc +=1;
+                cycles = 8;
             }
             0x57 => {
                 self.set_reg_d(self.get_reg_a());
@@ -337,6 +370,7 @@ impl Cpu {
             0x5E => {
                 self.set_reg_e(self.bus.read(self.get_reg_hl()));
                 self.pc +=1;
+                cycles = 8;
             }
             0x5F => {
                 self.set_reg_e(self.get_reg_a());
@@ -373,6 +407,7 @@ impl Cpu {
             0x66 => {
                 self.set_reg_h(self.bus.read(self.get_reg_hl()));
                 self.pc +=1;
+                cycles = 8;
             }
             0x67 => {
                 self.set_reg_h(self.get_reg_a());
@@ -405,6 +440,7 @@ impl Cpu {
             0x6E => {
                 self.set_reg_l(self.bus.read(self.get_reg_hl()));
                 self.pc +=1;
+                cycles = 8;
             }
             0x6F => {
                 self.set_reg_l(self.get_reg_a());
@@ -413,26 +449,32 @@ impl Cpu {
             0x71 => {
                 self.bus.write(self.get_reg_hl(), self.get_reg_c());
                 self.pc +=1;
+                cycles = 8;
             }
             0x72 => {
                 self.bus.write(self.get_reg_hl(), self.get_reg_d());
                 self.pc +=1;
+                cycles = 8;
             }
             0x73 => {
                 self.bus.write(self.get_reg_hl(), self.get_reg_e());
                 self.pc +=1;
+                cycles = 8;
             }
             0x74 => {
                 self.bus.write(self.get_reg_hl(), self.get_reg_h());
                 self.pc +=1;
+                cycles = 8;
             }
             0x75 => {
                 self.bus.write(self.get_reg_hl(), self.get_reg_l());
                 self.pc +=1;
+                cycles = 8;
             }
             0x77 => {
                 self.bus.write(self.get_reg_hl(), self.get_reg_a());
                 self.pc +=1;
+                cycles = 8;
             }
             0x78 => {
                 self.set_reg_a(self.get_reg_b());
@@ -461,6 +503,7 @@ impl Cpu {
             0x7E => {
                 self.set_reg_a(self.bus.read(self.get_reg_hl()));
                 self.pc +=1;
+                cycles = 8;
             }
             0x7F => {
                 self.set_reg_a(self.get_reg_a());
@@ -470,191 +513,207 @@ impl Cpu {
                 let addr = self.read_u16();
                 self.set_reg_a(self.bus.read(addr));
                 self.pc +=3;
+                cycles = 16;
             }
             0xE2 => {
                 let n: u16 = self.get_reg_c().into();
                 self.bus.write(0xFF00 + n, self.get_reg_a());
                 self.pc +=1;
+                cycles = 8;
             }
             0xF2 => {
                 let n: u16 = self.get_reg_c().into();
                 self.set_reg_a(self.bus.read(0xFF00 + n));
                 self.pc +=1;
+                cycles = 8;
             }
             // ADD
             0x09 => {
                 let res = self.add_u16(self.get_reg_hl(), self.get_reg_bc());
                 self.set_reg_hl(res);
                 self.pc +=1;
+                cycles = 8;
             }
             0x19 => {
                 let res = self.add_u16(self.get_reg_hl(), self.get_reg_de());
                 self.set_reg_hl(res);
                 self.pc +=1;
+                cycles = 8;
             }
             0x29 => {
                 let res = self.add_u16(self.get_reg_hl(), self.get_reg_hl());
                 self.set_reg_hl(res);
                 self.pc +=1;
+                cycles = 8;
             }
             0x39 => {
                 let res = self.add_u16(self.get_reg_hl(), self.sp);
                 self.set_reg_hl(res);
                 self.pc +=1;
+                cycles = 8;
             }
             0xC6 => {
                 let res = self.add_8(self.get_reg_a(), self.bus.read(self.pc+1));
                 self.set_reg_a(res);
                 self.pc +=2;
+                cycles = 8;
             }
             0xE8 => {
                 let res = self.add_i16(self.sp as i16, self.bus.read(self.pc+1) as i8 as i16);
                 self.sp = res as u16;
                 self.pc +=2;
+                cycles = 16;
             }
             // ADD
             0x80 => {
-               self.add_a(self.get_reg_b());
-               self.pc +=1;
+                self.add_a(self.get_reg_b());
+                self.pc +=1;
             }
             0x81 => {
-               self.add_a(self.get_reg_c());
-               self.pc +=1;
+                self.add_a(self.get_reg_c());
+                self.pc +=1;
             }
             0x82 => {
-               self.add_a(self.get_reg_d());
-               self.pc +=1;
+                self.add_a(self.get_reg_d());
+                self.pc +=1;
             }
             0x83 => {
-               self.add_a(self.get_reg_e());
-               self.pc +=1;
+                self.add_a(self.get_reg_e());
+                self.pc +=1;
             }
             0x84 => {
-               self.add_a(self.get_reg_h());
-               self.pc +=1;
+                self.add_a(self.get_reg_h());
+                self.pc +=1;
             }
             0x85 => {
-               self.add_a(self.get_reg_l());
-               self.pc +=1;
+                self.add_a(self.get_reg_l());
+                self.pc +=1;
             }
             0x86 => {
-               self.add_a(self.bus.read(self.get_reg_hl()));
-               self.pc +=1;
+                self.add_a(self.bus.read(self.get_reg_hl()));
+                self.pc +=1;
+                cycles = 8;
             }
             0x87 => {
-               self.add_a(self.get_reg_a());
-               self.pc +=1;
+                self.add_a(self.get_reg_a());
+                self.pc +=1;
             }
             // ADD with carry
             0x88 => {
-               self.add_a_c(self.get_reg_b());
-               self.pc +=1;
+                self.add_a_c(self.get_reg_b());
+                self.pc +=1;
             }
             0x89 => {
-               self.add_a_c(self.get_reg_c());
-               self.pc +=1;
+                self.add_a_c(self.get_reg_c());
+                self.pc +=1;
             }
             0x8A => {
-               self.add_a_c(self.get_reg_d());
-               self.pc +=1;
+                self.add_a_c(self.get_reg_d());
+                self.pc +=1;
             }
             0x8B => {
-               self.add_a_c(self.get_reg_e());
-               self.pc +=1;
+                self.add_a_c(self.get_reg_e());
+                self.pc +=1;
             }
             0x8C => {
-               self.add_a_c(self.get_reg_h());
-               self.pc +=1;
+                self.add_a_c(self.get_reg_h());
+                self.pc +=1;
             }
             0x8D => {
-               self.add_a_c(self.get_reg_l());
-               self.pc +=1;
+                self.add_a_c(self.get_reg_l());
+                self.pc +=1;
             }
             0x8E => {
-               self.add_a_c(self.bus.read(self.get_reg_hl()));
-               self.pc +=1;
+                self.add_a_c(self.bus.read(self.get_reg_hl()));
+                self.pc +=1;
+                cycles = 8;
             }
             0x8F => {
-               self.add_a_c(self.get_reg_a());
-               self.pc +=1;
+                self.add_a_c(self.get_reg_a());
+                self.pc +=1;
             }
             0xCE => {
-               self.add_a_c(self.bus.read(self.pc+1));
-               self.pc +=2;
+                self.add_a_c(self.bus.read(self.pc+1));
+                self.pc +=2;
+                cycles = 8;
             }
             // SUB
             0xD6 => {
-               self.sub_a(self.bus.read(self.pc+1));
-               self.pc +=2;
+                self.sub_a(self.bus.read(self.pc+1));
+                self.pc +=2;
+                cycles = 8;
             }
             0x90 => {
-               self.sub_a(self.get_reg_b());
-               self.pc +=1;
+                self.sub_a(self.get_reg_b());
+                self.pc +=1;
             }
             0x91 => {
-               self.sub_a(self.get_reg_c());
-               self.pc +=1;
+                self.sub_a(self.get_reg_c());
+                self.pc +=1;
             }
             0x92 => {
-               self.sub_a(self.get_reg_d());
-               self.pc +=1;
+                self.sub_a(self.get_reg_d());
+                self.pc +=1;
             }
             0x93 => {
-               self.sub_a(self.get_reg_e());
-               self.pc +=1;
+                self.sub_a(self.get_reg_e());
+                self.pc +=1;
             }
             0x94 => {
-               self.sub_a(self.get_reg_h());
-               self.pc +=1;
+                self.sub_a(self.get_reg_h());
+                self.pc +=1;
             }
             0x95 => {
-               self.sub_a(self.get_reg_l());
-               self.pc +=1;
+                self.sub_a(self.get_reg_l());
+                self.pc +=1;
             }
             0x96 => {
-               self.sub_a(self.bus.read(self.get_reg_hl()));
-               self.pc +=1;
+                self.sub_a(self.bus.read(self.get_reg_hl()));
+                self.pc +=1;
+                cycles = 8;
             }
             0x97 => {
-               self.sub_a(self.get_reg_a());
-               self.pc +=1;
+                self.sub_a(self.get_reg_a());
+                self.pc +=1;
             }
             // SUB with carry
             0x98 => {
-               self.sub_a_c(self.get_reg_b());
-               self.pc +=1;
+                self.sub_a_c(self.get_reg_b());
+                self.pc +=1;
             }
             0x99 => {
-               self.sub_a_c(self.get_reg_c());
-               self.pc +=1;
+                self.sub_a_c(self.get_reg_c());
+                self.pc +=1;
             }
             0x9A => {
-               self.sub_a_c(self.get_reg_d());
-               self.pc +=1;
+                self.sub_a_c(self.get_reg_d());
+                self.pc +=1;
             }
             0x9B => {
-               self.sub_a_c(self.get_reg_e());
-               self.pc +=1;
+                self.sub_a_c(self.get_reg_e());
+                self.pc +=1;
             }
             0x9C => {
-               self.sub_a_c(self.get_reg_h());
-               self.pc +=1;
+                self.sub_a_c(self.get_reg_h());
+                self.pc +=1;
             }
             0x9D => {
-               self.sub_a_c(self.get_reg_l());
-               self.pc +=1;
+                self.sub_a_c(self.get_reg_l());
+                self.pc +=1;
             }
             0x9E => {
-               self.sub_a_c(self.bus.read(self.get_reg_hl()));
-               self.pc +=1;
+                self.sub_a_c(self.bus.read(self.get_reg_hl()));
+                self.pc +=1;
+                cycles = 8;
             }
             0x9F => {
-               self.sub_a_c(self.get_reg_a());
-               self.pc +=1;
+                self.sub_a_c(self.get_reg_a());
+                self.pc +=1;
             }
             0xDE => {
-               self.sub_a_c(self.bus.read(self.pc+1));
-               self.pc +=2;
+                self.sub_a_c(self.bus.read(self.pc+1));
+                self.pc +=2;
+                cycles = 8;
             }
             // DEC
             0x05 => {
@@ -672,6 +731,7 @@ impl Cpu {
             0x35 => {
                 self.decrement_register("HL");
                 self.pc += 1;
+                cycles = 12;
             }
             0x0D => {
                 self.decrement_register("C");
@@ -692,18 +752,22 @@ impl Cpu {
             0x0B => {
                 self.set_reg_bc(self.get_reg_bc().overflowing_sub(1).0);
                 self.pc += 1;
+                cycles = 8;
             }
             0x1B => {
                 self.set_reg_de(self.get_reg_de().overflowing_sub(1).0);
                 self.pc += 1;
+                cycles = 8;
             }
             0x2B => {
                 self.set_reg_hl(self.get_reg_hl().overflowing_sub(1).0);
                 self.pc += 1;
+                cycles = 8;
             }
             0x3B => {
                 self.sp = self.sp.overflowing_sub(1).0;
                 self.pc += 1;
+                cycles = 8;
             }
             // ALU AND
             0xA0 => {
@@ -733,6 +797,7 @@ impl Cpu {
             0xA6 => {
                 self.and_a(self.bus.read(self.get_reg_hl()));
                 self.pc += 1;
+                cycles = 8;
             }
             0xA7 => {
                 self.and_a(self.get_reg_a());
@@ -741,6 +806,7 @@ impl Cpu {
             0xE6 => {
                 self.and_a(self.bus.read(self.pc+1));
                 self.pc += 2;
+                cycles = 8;
             }
             // ALU OR
             0xB0 => {
@@ -770,10 +836,12 @@ impl Cpu {
             0xB6 => {
                 self.or_a(self.bus.read(self.get_reg_hl()));
                 self.pc += 1;
+                cycles = 8;
             }
             0xF6 => {
                 self.or_a(self.bus.read(self.pc+1));
                 self.pc += 2;
+                cycles = 8;
             }
             0xB7 => {
                 self.or_a(self.get_reg_a());
@@ -782,6 +850,7 @@ impl Cpu {
             0x12 => {
                 self.bus.write(self.get_reg_de(), self.get_reg_a());
                 self.pc +=1;
+                cycles = 8;
             }
             // INC 8 BIT
             0x04 => {
@@ -799,6 +868,7 @@ impl Cpu {
             0x34 => {
                 self.increment_register("HL");
                 self.pc +=1;
+                cycles = 12;
             }
             0x0C => {
                 self.increment_register("C");
@@ -820,50 +890,63 @@ impl Cpu {
             0x03 => {
                 self.set_reg_bc(self.get_reg_bc().overflowing_add(1).0);
                 self.pc += 1;
+                cycles = 8;
             }
             0x13 => {
                 self.set_reg_de(self.get_reg_de().overflowing_add(1).0);
                 self.pc += 1;
+                cycles = 8;
             }
             0x23 => {
                 self.set_reg_hl(self.get_reg_hl().overflowing_add(1).0);
                 self.pc += 1;
+                cycles = 8;
             }
             0x33 => {
                 self.sp = self.sp.overflowing_add(1).0;
                 self.pc += 1;
+                cycles = 8;
             }
             // JR
             0x18 => {
                 let addr_offset = self.bus.read(self.pc+1) as i8;
                 self.pc = ((self.pc + 2) as i16 + addr_offset as i16) as u16;
+                cycles = 12;
             }
             0x20 => {
                 let addr_offset = self.bus.read(self.pc+1) as i8;
                 self.pc +=2;
+                cycles = 8;
                 if self.get_z_flag() == false {
                     self.pc = (self.pc as i16 + addr_offset as i16) as u16;
+                    cycles = 12;
                 } 
             }
             0x28 => {
                 let addr_offset = self.bus.read(self.pc+1) as i8;
                 self.pc +=2;
+                cycles = 8;
                 if self.get_z_flag() {
                     self.pc = (self.pc as i16 + addr_offset as i16) as u16;
+                    cycles = 12;
                 } 
             }
             0x30 => {
                 let addr_offset = self.bus.read(self.pc+1) as i8;
                 self.pc +=2;
+                cycles = 8;
                 if self.get_c_flag() == false {
                     self.pc = (self.pc as i16 + addr_offset as i16) as u16;
+                    cycles = 12;
                 } 
             }
             0x38 => {
                 let addr_offset = self.bus.read(self.pc+1) as i8;
                 self.pc +=2;
+                cycles = 8;
                 if self.get_c_flag() {
                     self.pc = (self.pc as i16 + addr_offset as i16) as u16;
+                    cycles = 12;
                 } 
             }
             0x22 => {
@@ -871,12 +954,14 @@ impl Cpu {
                 self.bus.write(addr, self.get_reg_a());
                 self.set_reg_hl(addr+1);
                 self.pc +=1;
+                cycles = 8;
             }
             0x32 => {
                 let addr = self.get_reg_hl();
                 self.bus.write(addr, self.get_reg_a());
                 self.set_reg_hl(addr-1);
                 self.pc +=1;
+                cycles = 8;
             }
             // JUMP
             0xC2 => {
@@ -884,8 +969,10 @@ impl Cpu {
                     let lsb = self.bus.read(self.pc+1);
                     let msb = self.bus.read(self.pc+2);
                     self.pc = u16::from_le_bytes([lsb, msb]);
+                    cycles = 16;
                 } else {
                     self.pc += 3;
+                    cycles = 12;
                 }
             }
             0xD2 => {
@@ -893,8 +980,10 @@ impl Cpu {
                     let lsb = self.bus.read(self.pc+1);
                     let msb = self.bus.read(self.pc+2);
                     self.pc = u16::from_le_bytes([lsb, msb]);
+                    cycles = 16;
                 } else {
                     self.pc += 3;
+                    cycles = 12;
                 }
             }
             0xCA => {
@@ -902,8 +991,10 @@ impl Cpu {
                     let lsb = self.bus.read(self.pc+1);
                     let msb = self.bus.read(self.pc+2);
                     self.pc = u16::from_le_bytes([lsb, msb]);
+                    cycles = 16;
                 } else {
                     self.pc += 3;
+                    cycles = 12;
                 }
             }
             0xDA => {
@@ -911,14 +1002,17 @@ impl Cpu {
                     let lsb = self.bus.read(self.pc+1);
                     let msb = self.bus.read(self.pc+2);
                     self.pc = u16::from_le_bytes([lsb, msb]);
+                    cycles = 16;
                 } else {
                     self.pc += 3;
+                    cycles = 12;
                 }
             }
             0xC3 => {
                 let lsb = self.bus.read(self.pc+1);
                 let msb = self.bus.read(self.pc+2);
                 self.pc = u16::from_le_bytes([lsb, msb]);
+                cycles = 16;
             }
             0xE9 => {
                 self.pc = self.get_reg_hl();
@@ -927,38 +1021,48 @@ impl Cpu {
             0xC9 => {
                 let value = self.pop();
                 self.pc = value;
+                cycles = 16;
             }
             0xD9 => {
                 let value = self.pop();
                 self.ime = true;
                 self.pc = value;
+                cycles = 16;
             }
             0xC0 => {
                 self.pc += 1;
+                cycles = 8;
                 if self.get_z_flag() == false {
                     let value = self.pop();
                     self.pc = value;
+                    cycles = 20;
                 }
             }
             0xC8 => {
                 self.pc += 1;
+                cycles = 8;
                 if self.get_z_flag() {
                     let value = self.pop();
                     self.pc = value;
+                    cycles = 20;
                 }
             }
             0xD0 => {
                 self.pc += 1;
+                cycles = 8;
                 if self.get_c_flag() == false {
                     let value = self.pop();
                     self.pc = value;
+                    cycles = 20;
                 }
             }
             0xD8 => {
                 self.pc += 1;
+                cycles = 8;
                 if self.get_c_flag() {
                     let value = self.pop();
                     self.pc = value;
+                    cycles = 20;
                 }
             }
             // XOR
@@ -989,54 +1093,59 @@ impl Cpu {
             0xAE => {
                 self.xor_a(self.bus.read(self.get_reg_hl()));
                 self.pc +=1;
+                cycles = 8;
             }
             0xAF => {
                 self.xor_a(self.get_reg_a());
-                //self.set_reg_a(0); // regA xor regA
-                //self.set_z_flag(true); // regA xor regA is always zero, set zero bit
-                //self.set_n_flag(false);
-                //self.set_h_flag(false);
-                //self.set_c_flag(false);
                 self.pc +=1;
             }
             0xEE => {
                 self.xor_a(self.bus.read(self.pc+1));
                 self.pc +=2;
+                cycles = 8;
             }
             // CALL
             0xC4 => {
                 let addr = self.read_u16();
                 self.pc += 3;
+                cycles = 12;
                 if self.get_z_flag() == false {
                     self.push(self.pc);
                     self.pc = addr;
+                    cycles = 24;
                 }
                 
             }
             0xCC => {
                 let addr = self.read_u16();
                 self.pc += 3;
+                cycles = 12;
                 if self.get_z_flag() {
                     self.push(self.pc);
                     self.pc = addr;
+                    cycles = 24;
                 }
                 
             }
             0xD4 => {
                 let addr = self.read_u16();
                 self.pc += 3;
+                cycles = 12;
                 if self.get_c_flag() == false {
                     self.push(self.pc);
                     self.pc = addr;
+                    cycles = 24;
                 }
                 
             }
             0xDC => {
                 let addr = self.read_u16();
                 self.pc += 3;
+                cycles = 12;
                 if self.get_c_flag() {
                     self.push(self.pc);
                     self.pc = addr;
+                    cycles = 24;
                 }
                 
             }
@@ -1044,6 +1153,7 @@ impl Cpu {
                 let addr = self.read_u16();
                 self.push(self.pc+3);
                 self.pc = addr;
+                cycles = 24;
             }
             // ROT A
             0x07 => {
@@ -1071,83 +1181,101 @@ impl Cpu {
             0xC5 => {
                 self.push(self.get_reg_bc());
                 self.pc +=1;
+                cycles = 16;
             }
             0xD5 => {
                 self.push(self.get_reg_de());
                 self.pc +=1;
+                cycles = 16;
             }
             0xE5 => {
                 self.push(self.get_reg_hl());
                 self.pc +=1;
+                cycles = 16;
             }
             0xF5 => {
                 self.push(self.get_reg_af());
                 self.pc +=1;
+                cycles = 16;
             }
             // POP
             0xC1 => {
                 let val = self.pop();
                 self.set_reg_bc(val);
                 self.pc +=1;
+                cycles = 12;
             }
             0xD1 => {
                 let val = self.pop();
                 self.set_reg_de(val);
                 self.pc +=1;
+                cycles = 12;
             }
             0xE1 => {
                 let val = self.pop();
                 self.set_reg_hl(val);
                 self.pc +=1;
+                cycles = 12;
             }
             0xF1 => {
                 let val = self.pop();
                 self.set_reg_af(val);
                 self.pc +=1;
+                cycles = 12;
             }
             // RST
             0xC7 => {
                 self.push(self.pc+1);
                 self.pc = 0x0000;
+                cycles = 16;
             }
             0xD7 => {
                 self.push(self.pc+1);
                 self.pc = 0x0010;
+                cycles = 16;
             }
             0xE7 => {
                 self.push(self.pc+1);
                 self.pc = 0x0020;
+                cycles = 16;
             }
             0xF7 => {
                 self.push(self.pc+1);
                 self.pc = 0x0030;
+                cycles = 16;
             }
             0xCF => {
                 self.push(self.pc+1);
                 self.pc = 0x0008;
+                cycles = 16;
             }
             0xDF => {
                 self.push(self.pc+1);
                 self.pc = 0x0018;
+                cycles = 16;
             }
             0xEF => {
                 self.push(self.pc+1);
                 self.pc = 0x0028;
+                cycles = 16;
             }
             0xFF => {
                 self.push(self.pc+1);
                 self.pc = 0x0038;
+                cycles = 16;
             }
             // LDH
             0xE0 => {
                 let n: u16 = self.bus.read(self.pc+1).into();
                 self.bus.write(0xFF00 + n, self.get_reg_a());
                 self.pc +=2;
+                cycles = 12;
             }
             0xF0 => {
                 let n: u16 = self.bus.read(self.pc+1).into();
                 self.set_reg_a(self.bus.read(0xFF00 + n));
                 self.pc += 2;
+                cycles = 12;
             }
             // CMP
             0xB8 => {
@@ -1177,6 +1305,7 @@ impl Cpu {
             0xBE => {
                 self.cp(self.bus.read(self.get_reg_hl()));
                 self.pc += 1;
+                cycles = 8;
             }
             0xBF => {
                 self.cp(self.get_reg_a());
@@ -1185,9 +1314,12 @@ impl Cpu {
             0xFE => {
                 self.cp(self.bus.read(self.pc+1));
                 self.pc += 2;
+                cycles = 8;
             }
             _ => panic!("Unknown instruction 0x{:02X}", inst)
         };
+
+        return cycles;
     }
 
     pub fn run(&mut self) {
@@ -1524,8 +1656,12 @@ impl Cpu {
         self.reg_af.set(11, value);
     }
 
-    pub fn perform_cb_instruction(&mut self) {
+    pub fn perform_cb_instruction(&mut self) -> u8 {
         let inst = self.bus.read(self.pc);
+        let mut cycles = 8;
+        if inst | 0x06 == inst || inst | 0x0E == inst {
+            cycles = 16;
+        }
         match inst {
             // RLC
             0x00 => self.rlc("B"),
@@ -1796,6 +1932,8 @@ impl Cpu {
             0xFF => self.set(7, "A"),
             _ => panic!("Unknown CB instruction 0x{:02X}", inst)
         }
+
+        return cycles;
     }
 
     fn rlc(&mut self, reg_id: &str) {
@@ -2152,6 +2290,42 @@ impl Cpu {
                 self.pc = 0x40 + (0x08 * i) as u16;
                 return;
             }
+        }
+    }
+
+    fn handle_timer(&mut self, cycles: u8) {
+        // update div, freq 4194304/16384
+        self.div_cycles += cycles as u16;
+        if self.div_cycles >= 1024 {
+            self.div_cycles -= 1024;
+            self.bus.increment_div();
+        }
+
+        let tac = self.bus.read(0xFF07);
+        // is timer enabled
+        if tac & 0b100 == 0 {
+            return
+        }
+        let freq = match tac & 0b11 {
+            0 => 4096,
+            1 => 262144,
+            2 => 65536,
+            3 => 16384,
+            _ => panic!("can't happen"),
+        };
+        self.timer_cycles += cycles as u32;
+
+        let ratio = self.clock_freq / freq;
+        while self.timer_cycles as u32  >= ratio {
+            let tima = self.bus.read(0xFF05);
+            if tima == 0xFF {
+                self.bus.write(0xFF05, self.bus.read(0xFF06));
+                self.bus.write(0xFF0F, self.bus.read(0xFF0F) | 0b00100); 
+                self.is_halted = false;
+            } else {
+                self.bus.write(0xFF05, tima + 1);
+            }
+            self.timer_cycles -= ratio;
         }
     }
 

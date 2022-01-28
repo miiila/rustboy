@@ -112,4 +112,8 @@ impl Bus {
         panic!("Writing to unknown addres {:#x}", addr)
     }
 
+    pub fn increment_div(&mut self) {
+        self.io.increment_div();
+    }
+
 }

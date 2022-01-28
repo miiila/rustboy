@@ -11,7 +11,8 @@ pub struct Cpu {
     reg_hl: BitArray<u16, bitvec::order::Msb0>,
     sp: u16,
     pc: u16,
-    i: u64,
+    ime: bool,
+    i: u64, //debug
 }
 
 impl Cpu {
@@ -26,6 +27,7 @@ impl Cpu {
         cpu.reg_bc.store_be(0x0013);
         cpu.reg_de.store_be(0x00D8);
         cpu.reg_hl.store_be(0x014D);
+        cpu.ime = false;
         cpu.i = 1;
         cpu
     }
@@ -35,6 +37,7 @@ impl Cpu {
     } 
 
     pub fn run_next_instruction(&mut self) {
+        self.handle_interrupts();
         let inst = self.bus.read(self.pc);
         self.perform_instruction(inst);
     }
@@ -58,22 +61,60 @@ impl Cpu {
                 self.pc += 1;
             },
             0xF3 => {
-                self.bus.write(0xFFFF, 0);
+                self.ime = false;
                 self.pc +=1;
             }
             0xFB => {
-                self.bus.write(0xFFFF, 1);
+                self.ime = true;
+                self.pc +=1;
+            }
+            0x27 => {
+                // https://github.com/aksiksi/gbc/blob/f493dd1f6168cfadd8451a1af9f8b0a4a241987f/lib/src/cpu.rs#L1104
+                // https://archive.org/details/GameBoyProgManVer1.1/page/n121/mode/2up
+                let mut a = self.get_reg_a();
+                //let mut c = false;
+                let mut c = self.get_c_flag();
+                if self.get_n_flag() {
+                     // SUBTRACT
+                    if self.get_h_flag() {
+                        a = a.wrapping_sub(0x06);
+                    }
+                    if self.get_c_flag() {
+                        a = a.wrapping_sub(0x60);
+                    }
+                } else {
+                    if self.get_c_flag() || a > 0x99 {
+                        a = a.wrapping_add(0x60);
+                        c = true;
+                    }
+                    if self.get_h_flag() || (a & 0x0F) > 0x9 {
+                        a = a.wrapping_add(0x06);
+                    }
+                }
+
+                self.set_reg_a(a);
+                self.set_z_flag(a == 0);
+                self.set_h_flag(false);
+                self.set_c_flag(c);
                 self.pc +=1;
             }
             0x37 => {
                 self.set_n_flag(false);
                 self.set_h_flag(false);
                 self.set_c_flag(true);
+                self.pc +=1;
             }
             0x2F => {
                 self.set_reg_a(!self.get_reg_a());
                 self.set_n_flag(true);
                 self.set_h_flag(true);
+                self.pc +=1;
+            }
+            0x3F => {
+                self.set_c_flag(!self.get_c_flag());
+                self.set_n_flag(false);
+                self.set_h_flag(false);
+                self.pc +=1;
             }
             // LD 16 bit
             0x01 => {
@@ -114,6 +155,11 @@ impl Cpu {
                 self.pc +=3;
             }
             // LD 8 bit
+            0x02 => {
+                let addr = self.get_reg_bc();
+                self.bus.write(addr, self.get_reg_a());
+                self.pc +=1;
+            }
             0x0A => {
                 let addr = self.get_reg_bc();
                 self.set_reg_a(self.bus.read(addr));
@@ -466,6 +512,39 @@ impl Cpu {
                 self.sp = res as u16;
                 self.pc +=2;
             }
+            // ADD
+            0x80 => {
+               self.add_a(self.get_reg_b());
+               self.pc +=1;
+            }
+            0x81 => {
+               self.add_a(self.get_reg_c());
+               self.pc +=1;
+            }
+            0x82 => {
+               self.add_a(self.get_reg_d());
+               self.pc +=1;
+            }
+            0x83 => {
+               self.add_a(self.get_reg_e());
+               self.pc +=1;
+            }
+            0x84 => {
+               self.add_a(self.get_reg_h());
+               self.pc +=1;
+            }
+            0x85 => {
+               self.add_a(self.get_reg_l());
+               self.pc +=1;
+            }
+            0x86 => {
+               self.add_a(self.bus.read(self.get_reg_hl()));
+               self.pc +=1;
+            }
+            0x87 => {
+               self.add_a(self.get_reg_a());
+               self.pc +=1;
+            }
             // ADD with carry
             0x88 => {
                self.add_a_c(self.get_reg_b());
@@ -507,6 +586,38 @@ impl Cpu {
             0xD6 => {
                self.sub_a(self.bus.read(self.pc+1));
                self.pc +=2;
+            }
+            0x90 => {
+               self.sub_a(self.get_reg_b());
+               self.pc +=1;
+            }
+            0x91 => {
+               self.sub_a(self.get_reg_c());
+               self.pc +=1;
+            }
+            0x92 => {
+               self.sub_a(self.get_reg_d());
+               self.pc +=1;
+            }
+            0x93 => {
+               self.sub_a(self.get_reg_e());
+               self.pc +=1;
+            }
+            0x94 => {
+               self.sub_a(self.get_reg_h());
+               self.pc +=1;
+            }
+            0x95 => {
+               self.sub_a(self.get_reg_l());
+               self.pc +=1;
+            }
+            0x96 => {
+               self.sub_a(self.bus.read(self.get_reg_hl()));
+               self.pc +=1;
+            }
+            0x97 => {
+               self.sub_a(self.get_reg_a());
+               self.pc +=1;
             }
             // SUB with carry
             0x98 => {
@@ -550,12 +661,8 @@ impl Cpu {
                 self.decrement_register("B");
                 self.pc += 1;
             }
-            0x0D => {
-                self.decrement_register("C");
-                self.pc += 1;
-            }
-            0x1D => {
-                self.decrement_register("E");
+            0x15 => {
+                self.decrement_register("D");
                 self.pc += 1;
             }
             0x25 => {
@@ -564,6 +671,14 @@ impl Cpu {
             }
             0x35 => {
                 self.decrement_register("HL");
+                self.pc += 1;
+            }
+            0x0D => {
+                self.decrement_register("C");
+                self.pc += 1;
+            }
+            0x1D => {
+                self.decrement_register("E");
                 self.pc += 1;
             }
             0x2D => {
@@ -679,6 +794,10 @@ impl Cpu {
             }
             0x24 => {
                 self.increment_register("H");
+                self.pc +=1;
+            }
+            0x34 => {
+                self.increment_register("HL");
                 self.pc +=1;
             }
             0x0C => {
@@ -811,7 +930,7 @@ impl Cpu {
             }
             0xD9 => {
                 let value = self.pop();
-                self.bus.write(0xFFFF, 1);
+                self.ime = true;
                 self.pc = value;
             }
             0xC0 => {
@@ -872,11 +991,12 @@ impl Cpu {
                 self.pc +=1;
             }
             0xAF => {
-                self.set_reg_a(0); // regA xor regA
-                self.set_z_flag(true); // regA xor regA is always zero, set zero bit
-                self.set_n_flag(false);
-                self.set_h_flag(false);
-                self.set_c_flag(false);
+                self.xor_a(self.get_reg_a());
+                //self.set_reg_a(0); // regA xor regA
+                //self.set_z_flag(true); // regA xor regA is always zero, set zero bit
+                //self.set_n_flag(false);
+                //self.set_h_flag(false);
+                //self.set_c_flag(false);
                 self.pc +=1;
             }
             0xEE => {
@@ -927,19 +1047,24 @@ impl Cpu {
             }
             // ROT A
             0x07 => {
+                // TODO RLCA
                 self.rlc("A");
+                self.set_z_flag(false);
                 self.pc += 1;
             }
             0x17 => {
                 self.rl("A");
+                self.set_z_flag(false);
                 self.pc += 1;
             }
             0x0F => {
                 self.rrc("A");
+                self.set_z_flag(false);
                 self.pc += 1;
             }
             0x1F => {
                 self.rr("A");
+                self.set_z_flag(false);
                 self.pc += 1;
             }
             // PUSH
@@ -1108,12 +1233,11 @@ impl Cpu {
         if reg_id == "HL" {
             let val = self.bus.read(self.get_reg_hl());
             let low_nibble = val & 0b1111;
-            let (val, _) = val.overflowing_add(1);
-            self.bus.write(self.get_reg_hl(), val);
-            let low_nibble_new = val & 0b1111;
-            self.set_z_flag(val == 0);
+            let new_val = val.wrapping_add(1);
+            self.bus.write(self.get_reg_hl(), new_val);
+            self.set_z_flag(new_val == 0);
             self.set_n_flag(false);
-            self.set_h_flag(low_nibble + low_nibble_new > 0b1111);
+            self.set_h_flag(low_nibble + 1 > 0b1111);
             return 
         }
         let reg = match reg_id {
@@ -1126,13 +1250,13 @@ impl Cpu {
             "L" => &mut self.reg_hl[8..16],
               _ => panic!("Unknown register {} used.", reg_id)
         }; 
-        let val = reg.load_be::<u8>().overflowing_add(1).0;
+        let val = reg.load_be::<u8>();
         let low_nibble = val & 0b1111;
+        let val = val.wrapping_add(1);
         reg.store_be(val);
-        let low_nibble_new = val & 0b1111;
         self.set_z_flag(val == 0);
         self.set_n_flag(false);
-        self.set_h_flag(low_nibble < low_nibble_new);
+        self.set_h_flag(low_nibble + 1 > 0b1111);
     }
 
     fn decrement_register(&mut self, reg_id: &str) {
@@ -1403,54 +1527,290 @@ impl Cpu {
     pub fn perform_cb_instruction(&mut self) {
         let inst = self.bus.read(self.pc);
         match inst {
+            // RLC
             0x00 => self.rlc("B"),
             0x01 => self.rlc("C"),
             0x02 => self.rlc("D"),
             0x03 => self.rlc("E"),
             0x04 => self.rlc("H"),
             0x05 => self.rlc("L"),
+            0x06 => self.rlc("HL"),
             0x07 => self.rlc("A"),
+            // RRC
             0x08 => self.rrc("B"),
             0x09 => self.rrc("C"),
             0x0A => self.rrc("D"),
             0x0B => self.rrc("E"),
             0x0C => self.rrc("H"),
             0x0D => self.rrc("L"),
+            0x0E => self.rrc("HL"),
             0x0F => self.rrc("A"),
+            // RL
             0x10 => self.rl("B"),
             0x11 => self.rl("C"),
             0x12 => self.rl("D"),
             0x13 => self.rl("E"),
             0x14 => self.rl("H"),
             0x15 => self.rl("L"),
+            0x16 => self.rl("HL"),
             0x17 => self.rl("A"),
+            // RR
             0x18 => self.rr("B"),
             0x19 => self.rr("C"),
             0x1A => self.rr("D"),
             0x1B => self.rr("E"),
             0x1C => self.rr("H"),
             0x1D => self.rr("L"),
+            0x1E => self.rr("HL"),
             0x1F => self.rr("A"),
+            // SLA
+            0x20 => self.sla("B"),
+            0x21 => self.sla("C"),
+            0x22 => self.sla("D"),
+            0x23 => self.sla("E"),
+            0x24 => self.sla("H"),
+            0x25 => self.sla("L"),
+            0x26 => self.sla("HL"),
+            0x27 => self.sla("A"),
+            // SRA
+            0x28 => self.sra("B"),
+            0x29 => self.sra("C"),
+            0x2A => self.sra("D"),
+            0x2B => self.sra("E"),
+            0x2C => self.sra("H"),
+            0x2D => self.sra("L"),
+            0x2E => self.sra("HL"),
+            0x2F => self.sra("A"),
+            // SWAP
             0x30 => self.swap("B"),
             0x31 => self.swap("C"),
             0x32 => self.swap("D"),
             0x33 => self.swap("E"),
-            0x34 => self.swap("F"),
-            0x35 => self.swap("H"),
-            0x36 => self.swap("L"),
+            0x34 => self.swap("H"),
+            0x35 => self.swap("L"),
+            0x36 => self.swap("HL"),
             0x37 => self.swap("A"),
+            // SRL
             0x38 => self.srl("B"),
             0x39 => self.srl("C"),
             0x3A => self.srl("D"),
             0x3B => self.srl("E"),
             0x3C => self.srl("H"),
             0x3D => self.srl("L"),
+            0x3E => self.srl("HL"),
             0x3F => self.srl("A"),
+            // BIT
+            0x40 => self.bit(0, "B"),
+            0x41 => self.bit(0, "C"),
+            0x42 => self.bit(0, "D"),
+            0x43 => self.bit(0, "E"),
+            0x44 => self.bit(0, "H"),
+            0x45 => self.bit(0, "L"),
+            0x46 => self.bit(0, "HL"),
+            0x47 => self.bit(0, "A"),
+            0x48 => self.bit(1, "B"),
+            0x49 => self.bit(1, "C"),
+            0x4A => self.bit(1, "D"),
+            0x4B => self.bit(1, "E"),
+            0x4C => self.bit(1, "H"),
+            0x4D => self.bit(1, "L"),
+            0x4E => self.bit(1, "HL"),
+            0x4F => self.bit(1, "A"),
+            0x50 => self.bit(2, "B"),
+            0x51 => self.bit(2, "C"),
+            0x52 => self.bit(2, "D"),
+            0x53 => self.bit(2, "E"),
+            0x54 => self.bit(2, "H"),
+            0x55 => self.bit(2, "L"),
+            0x56 => self.bit(2, "HL"),
+            0x57 => self.bit(2, "A"),
+            0x58 => self.bit(3, "B"),
+            0x59 => self.bit(3, "C"),
+            0x5A => self.bit(3, "D"),
+            0x5B => self.bit(3, "E"),
+            0x5C => self.bit(3, "H"),
+            0x5D => self.bit(3, "L"),
+            0x5E => self.bit(3, "HL"),
+            0x5F => self.bit(3, "A"),
+            0x60 => self.bit(4, "B"),
+            0x61 => self.bit(4, "C"),
+            0x62 => self.bit(4, "D"),
+            0x63 => self.bit(4, "E"),
+            0x64 => self.bit(4, "H"),
+            0x65 => self.bit(4, "L"),
+            0x66 => self.bit(4, "HL"),
+            0x67 => self.bit(4, "A"),
+            0x68 => self.bit(5, "B"),
+            0x69 => self.bit(5, "C"),
+            0x6A => self.bit(5, "D"),
+            0x6B => self.bit(5, "E"),
+            0x6C => self.bit(5, "H"),
+            0x6D => self.bit(5, "L"),
+            0x6E => self.bit(5, "HL"),
+            0x6F => self.bit(5, "A"),
+            0x70 => self.bit(6, "B"),
+            0x71 => self.bit(6, "C"),
+            0x72 => self.bit(6, "D"),
+            0x73 => self.bit(6, "E"),
+            0x74 => self.bit(6, "H"),
+            0x75 => self.bit(6, "L"),
+            0x76 => self.bit(6, "HL"),
+            0x77 => self.bit(6, "A"),
+            0x78 => self.bit(7, "B"),
+            0x79 => self.bit(7, "C"),
+            0x7A => self.bit(7, "D"),
+            0x7B => self.bit(7, "E"),
+            0x7C => self.bit(7, "H"),
+            0x7D => self.bit(7, "L"),
+            0x7E => self.bit(7, "HL"),
+            0x7F => self.bit(7, "A"),
+            // RES
+            0x80 => self.res(0, "B"),
+            0x81 => self.res(0, "C"),
+            0x82 => self.res(0, "D"),
+            0x83 => self.res(0, "E"),
+            0x84 => self.res(0, "H"),
+            0x85 => self.res(0, "L"),
+            0x86 => self.res(0, "HL"),
+            0x87 => self.res(0, "A"),
+            0x88 => self.res(1, "B"),
+            0x89 => self.res(1, "C"),
+            0x8A => self.res(1, "D"),
+            0x8B => self.res(1, "E"),
+            0x8C => self.res(1, "H"),
+            0x8D => self.res(1, "L"),
+            0x8E => self.res(1, "HL"),
+            0x8F => self.res(1, "A"),
+            0x90 => self.res(2, "B"),
+            0x91 => self.res(2, "C"),
+            0x92 => self.res(2, "D"),
+            0x93 => self.res(2, "E"),
+            0x94 => self.res(2, "H"),
+            0x95 => self.res(2, "L"),
+            0x96 => self.res(2, "HL"),
+            0x97 => self.res(2, "A"),
+            0x98 => self.res(3, "B"),
+            0x99 => self.res(3, "C"),
+            0x9A => self.res(3, "D"),
+            0x9B => self.res(3, "E"),
+            0x9C => self.res(3, "H"),
+            0x9D => self.res(3, "L"),
+            0x9E => self.res(3, "HL"),
+            0x9F => self.res(3, "A"),
+            0xA0 => self.res(4, "B"),
+            0xA1 => self.res(4, "C"),
+            0xA2 => self.res(4, "D"),
+            0xA3 => self.res(4, "E"),
+            0xA4 => self.res(4, "H"),
+            0xA5 => self.res(4, "L"),
+            0xA6 => self.res(4, "HL"),
+            0xA7 => self.res(4, "A"),
+            0xA8 => self.res(5, "B"),
+            0xA9 => self.res(5, "C"),
+            0xAA => self.res(5, "D"),
+            0xAB => self.res(5, "E"),
+            0xAC => self.res(5, "H"),
+            0xAD => self.res(5, "L"),
+            0xAE => self.res(5, "HL"),
+            0xAF => self.res(5, "A"),
+            0xB0 => self.res(6, "B"),
+            0xB1 => self.res(6, "C"),
+            0xB2 => self.res(6, "D"),
+            0xB3 => self.res(6, "E"),
+            0xB4 => self.res(6, "H"),
+            0xB5 => self.res(6, "L"),
+            0xB6 => self.res(6, "HL"),
+            0xB7 => self.res(6, "A"),
+            0xB8 => self.res(7, "B"),
+            0xB9 => self.res(7, "C"),
+            0xBA => self.res(7, "D"),
+            0xBB => self.res(7, "E"),
+            0xBC => self.res(7, "H"),
+            0xBD => self.res(7, "L"),
+            0xBE => self.res(7, "HL"),
+            0xBF => self.res(7, "A"),
+            // SET
+            0xC0 => self.set(0, "B"),
+            0xC1 => self.set(0, "C"),
+            0xC2 => self.set(0, "D"),
+            0xC3 => self.set(0, "E"),
+            0xC4 => self.set(0, "H"),
+            0xC5 => self.set(0, "L"),
+            0xC6 => self.set(0, "HL"),
+            0xC7 => self.set(0, "A"),
+            0xC8 => self.set(1, "B"),
+            0xC9 => self.set(1, "C"),
+            0xCA => self.set(1, "D"),
+            0xCB => self.set(1, "E"),
+            0xCC => self.set(1, "H"),
+            0xCD => self.set(1, "L"),
+            0xCE => self.set(1, "HL"),
+            0xCF => self.set(1, "A"),
+            0xD0 => self.set(2, "B"),
+            0xD1 => self.set(2, "C"),
+            0xD2 => self.set(2, "D"),
+            0xD3 => self.set(2, "E"),
+            0xD4 => self.set(2, "H"),
+            0xD5 => self.set(2, "L"),
+            0xD6 => self.set(2, "HL"),
+            0xD7 => self.set(2, "A"),
+            0xD8 => self.set(3, "B"),
+            0xD9 => self.set(3, "C"),
+            0xDA => self.set(3, "D"),
+            0xDB => self.set(3, "E"),
+            0xDC => self.set(3, "H"),
+            0xDD => self.set(3, "L"),
+            0xDE => self.set(3, "HL"),
+            0xDF => self.set(3, "A"),
+            0xE0 => self.set(4, "B"),
+            0xE1 => self.set(4, "C"),
+            0xE2 => self.set(4, "D"),
+            0xE3 => self.set(4, "E"),
+            0xE4 => self.set(4, "H"),
+            0xE5 => self.set(4, "L"),
+            0xE6 => self.set(4, "HL"),
+            0xE7 => self.set(4, "A"),
+            0xE8 => self.set(5, "B"),
+            0xE9 => self.set(5, "C"),
+            0xEA => self.set(5, "D"),
+            0xEB => self.set(5, "E"),
+            0xEC => self.set(5, "H"),
+            0xED => self.set(5, "L"),
+            0xEE => self.set(5, "HL"),
+            0xEF => self.set(5, "A"),
+            0xF0 => self.set(6, "B"),
+            0xF1 => self.set(6, "C"),
+            0xF2 => self.set(6, "D"),
+            0xF3 => self.set(6, "E"),
+            0xF4 => self.set(6, "H"),
+            0xF5 => self.set(6, "L"),
+            0xF6 => self.set(6, "HL"),
+            0xF7 => self.set(6, "A"),
+            0xF8 => self.set(7, "B"),
+            0xF9 => self.set(7, "C"),
+            0xFA => self.set(7, "D"),
+            0xFB => self.set(7, "E"),
+            0xFC => self.set(7, "H"),
+            0xFD => self.set(7, "L"),
+            0xFE => self.set(7, "HL"),
+            0xFF => self.set(7, "A"),
             _ => panic!("Unknown CB instruction 0x{:02X}", inst)
         }
     }
 
     fn rlc(&mut self, reg_id: &str) {
+        if reg_id == "HL" {
+            let mut val = bitarr!(u8, Msb0; 0; 8);
+            val.store_be(self.bus.read(self.get_reg_hl()));
+            let carry = val[0];
+            val.rotate_left(1); 
+            let zero = val.load_be::<u8>() == 0;
+            self.bus.write(self.get_reg_hl(), val.load_be());
+            self.reset_flags();
+            self.set_c_flag(carry);
+            self.set_z_flag(zero);
+            return 
+        }
         let reg = match reg_id {
             "A" => &mut self.reg_af[0..8],
             "B" => &mut self.reg_bc[0..8],
@@ -1463,7 +1823,7 @@ impl Cpu {
         };
         let carry = reg[0];
         reg.rotate_left(1);
-        let zero = reg_id != "A" && reg.load_be::<u8>() == 0;
+        let zero = reg.load_be::<u8>() == 0;
         self.reset_flags();
         self.set_c_flag(carry);
         self.set_z_flag(zero);
@@ -1471,6 +1831,18 @@ impl Cpu {
     }
 
     fn rrc(&mut self, reg_id: &str) {
+        if reg_id == "HL" {
+            let mut val = bitarr!(u8, Msb0; 0; 8);
+            val.store_be(self.bus.read(self.get_reg_hl()));
+            let carry = val[7];
+            val.rotate_right(1); 
+            let zero = val.load_be::<u8>() == 0;
+            self.bus.write(self.get_reg_hl(), val.load_be());
+            self.reset_flags();
+            self.set_c_flag(carry);
+            self.set_z_flag(zero);
+            return 
+        }
         let reg = match reg_id {
             "A" => &mut self.reg_af[0..8],
             "B" => &mut self.reg_bc[0..8],
@@ -1482,8 +1854,8 @@ impl Cpu {
               _ => panic!("Unknown register {} used.", reg_id)
         };
         let carry = reg[7];
-        reg.shift_right(1);
-        let zero = reg_id != "A" && reg.load_be::<u8>() == 0;
+        reg.rotate_right(1);
+        let zero = reg.load_be::<u8>() == 0;
         self.reset_flags();
         self.set_c_flag(carry);
         self.set_z_flag(zero);
@@ -1492,6 +1864,19 @@ impl Cpu {
 
     fn rl(&mut self, reg_id: &str) {
         let carry = self.get_c_flag();
+        if reg_id == "HL" {
+            let mut val = bitarr!(u8, Msb0; 0; 8);
+            val.store_be(self.bus.read(self.get_reg_hl()));
+            let new_carry = val[0];
+            val.shift_left(1); 
+            val.set(7,carry);
+            let zero = val.load_be::<u8>() == 0;
+            self.bus.write(self.get_reg_hl(), val.load_be());
+            self.reset_flags();
+            self.set_c_flag(new_carry);
+            self.set_z_flag(zero);
+            return 
+        }
         let reg = match reg_id {
             "A" => &mut self.reg_af[0..8],
             "B" => &mut self.reg_bc[0..8],
@@ -1505,7 +1890,7 @@ impl Cpu {
         let new_carry = reg[0];
         reg.shift_left(1);
         reg.set(7,carry);
-        let zero = reg_id != "A" && reg.load_be::<u8>() == 0;
+        let zero = reg.load_be::<u8>() == 0;
         self.reset_flags();
         self.set_c_flag(new_carry);
         self.set_z_flag(zero);
@@ -1513,6 +1898,19 @@ impl Cpu {
     }
 
     fn swap(&mut self, reg_id: &str) {
+        if reg_id == "HL" {
+            let mut val = bitarr!(u8, Msb0; 0; 8);
+            val.store_be(self.bus.read(self.get_reg_hl()));
+            val.swap(0,4);
+            val.swap(1,5);
+            val.swap(2,6);
+            val.swap(3,7);
+            let zero = val.load_be::<u8>() == 0;
+            self.bus.write(self.get_reg_hl(), val.load_be());
+            self.reset_flags();
+            self.set_z_flag(zero);
+            return 
+        }
         let reg = match reg_id {
             "A" => &mut self.reg_af[0..8],
             "B" => &mut self.reg_bc[0..8],
@@ -1535,6 +1933,19 @@ impl Cpu {
 
     fn rr(&mut self, reg_id: &str) {
         let carry = self.get_c_flag();
+        if reg_id == "HL" {
+            let mut val = bitarr!(u8, Msb0; 0; 8);
+            val.store_be(self.bus.read(self.get_reg_hl()));
+            let new_carry = val[7];
+            val.shift_right(1); 
+            val.set(0,carry);
+            let zero = val.load_be::<u8>() == 0;
+            self.bus.write(self.get_reg_hl(), val.load_be());
+            self.reset_flags();
+            self.set_c_flag(new_carry);
+            self.set_z_flag(zero);
+            return 
+        }
         let reg = match reg_id {
             "A" => &mut self.reg_af[0..8],
             "B" => &mut self.reg_bc[0..8],
@@ -1548,7 +1959,73 @@ impl Cpu {
         let new_carry = reg[7];
         reg.shift_right(1);
         reg.set(0,carry);
-        let zero = reg_id != "A" && reg.load_be::<u8>() == 0;
+        let zero = reg.load_be::<u8>() == 0;
+        self.reset_flags();
+        self.set_c_flag(new_carry);
+        self.set_z_flag(zero);
+
+    }
+
+    fn sla(&mut self, reg_id: &str) {
+        if reg_id == "HL" {
+            let mut val = bitarr!(u8, Msb0; 0; 8);
+            val.store_be(self.bus.read(self.get_reg_hl()));
+            self.reset_flags();
+            self.set_c_flag(val[0]);
+            val.shift_left(1); 
+            let zero = val.load_be::<u8>() == 0;
+            self.bus.write(self.get_reg_hl(), val.load_be());
+            self.set_z_flag(zero);
+            return 
+        }
+        let reg = match reg_id {
+            "A" => &mut self.reg_af[0..8],
+            "B" => &mut self.reg_bc[0..8],
+            "C" => &mut self.reg_bc[8..16],
+            "D" => &mut self.reg_de[0..8],
+            "E" => &mut self.reg_de[8..16],
+            "H" => &mut self.reg_hl[0..8],
+            "L" => &mut self.reg_hl[8..16],
+              _ => panic!("Unknown register {} used.", reg_id)
+        };
+        let new_carry = reg[0];
+        reg.shift_left(1);
+        let zero = reg.load_be::<u8>() == 0;
+        self.reset_flags();
+        self.set_c_flag(new_carry);
+        self.set_z_flag(zero);
+
+    }
+
+    fn sra(&mut self, reg_id: &str) {
+        if reg_id == "HL" {
+            let mut val = bitarr!(u8, Msb0; 0; 8);
+            val.store_be(self.bus.read(self.get_reg_hl()));
+            let bit7 = val[0];
+            self.reset_flags();
+            self.set_c_flag(val[7]);
+            val.shift_right(1); 
+            val.set(0, bit7);
+            let zero = val.load_be::<u8>() == 0;
+            self.bus.write(self.get_reg_hl(), val.load_be());
+            self.set_z_flag(zero);
+            return 
+        }
+        let reg = match reg_id {
+            "A" => &mut self.reg_af[0..8],
+            "B" => &mut self.reg_bc[0..8],
+            "C" => &mut self.reg_bc[8..16],
+            "D" => &mut self.reg_de[0..8],
+            "E" => &mut self.reg_de[8..16],
+            "H" => &mut self.reg_hl[0..8],
+            "L" => &mut self.reg_hl[8..16],
+              _ => panic!("Unknown register {} used.", reg_id)
+        };
+        let bit7 = reg[0];
+        let new_carry = reg[7];
+        reg.shift_right(1);
+        reg.set(0,bit7);
+        let zero = reg.load_be::<u8>() == 0;
         self.reset_flags();
         self.set_c_flag(new_carry);
         self.set_z_flag(zero);
@@ -1556,6 +2033,18 @@ impl Cpu {
     }
 
     fn srl(&mut self, reg_id: &str) {
+        if reg_id == "HL" {
+            let mut val = bitarr!(u8, Msb0; 0; 8);
+            val.store_be(self.bus.read(self.get_reg_hl()));
+            let carry = val[7];
+            val.shift_right(1); 
+            let zero = val.load_be::<u8>() == 0;
+            self.bus.write(self.get_reg_hl(), val.load_be());
+            self.reset_flags();
+            self.set_c_flag(carry);
+            self.set_z_flag(zero);
+            return 
+        }
         let reg = match reg_id {
             "A" => &mut self.reg_af[0..8],
             "B" => &mut self.reg_bc[0..8],
@@ -1572,7 +2061,98 @@ impl Cpu {
         self.reset_flags();
         self.set_c_flag(carry);
         self.set_z_flag(zero);
+    }
 
+    fn bit(&mut self, bit: usize, reg_id: &str) {
+        if reg_id == "HL" {
+            let mut val = bitarr!(u8, Msb0; 0; 8);
+            val.store_be(self.bus.read(self.get_reg_hl()));
+            let z = val[7 - bit] == false;
+            self.set_z_flag(z);
+            self.set_n_flag(false);
+            self.set_h_flag(true);
+            return 
+        }
+        let reg = match reg_id {
+            "A" => & self.reg_af[0..8],
+            "B" => & self.reg_bc[0..8],
+            "C" => & self.reg_bc[8..16],
+            "D" => & self.reg_de[0..8],
+            "E" => & self.reg_de[8..16],
+            "H" => & self.reg_hl[0..8],
+            "L" => & self.reg_hl[8..16],
+              _ => panic!("Unknown register {} used.", reg_id)
+        };
+        let z = !reg[7 - bit];
+        self.set_z_flag(z);
+        self.set_n_flag(false);
+        self.set_h_flag(true);
+    }
+
+    fn set(&mut self, bit: usize, reg_id: &str) {
+        if reg_id == "HL" {
+            let mut val = bitarr!(u8, Msb0; 0; 8);
+            val.store_be(self.bus.read(self.get_reg_hl()));
+            val.set(7 - bit, true);
+            self.bus.write(self.get_reg_hl(), val.load_be());
+            return 
+        }
+        let reg = match reg_id {
+            "A" => &mut self.reg_af[0..8],
+            "B" => &mut self.reg_bc[0..8],
+            "C" => &mut self.reg_bc[8..16],
+            "D" => &mut self.reg_de[0..8],
+            "E" => &mut self.reg_de[8..16],
+            "H" => &mut self.reg_hl[0..8],
+            "L" => &mut self.reg_hl[8..16],
+              _ => panic!("Unknown register {} used.", reg_id)
+        };
+        reg.set(7 - bit, true);
+    }
+
+    fn res(&mut self, bit: usize, reg_id: &str) {
+        if reg_id == "HL" {
+            let mut val = bitarr!(u8, Msb0; 0; 8);
+            val.store_be(self.bus.read(self.get_reg_hl()));
+            val.set(7 - bit, false);
+            self.bus.write(self.get_reg_hl(), val.load_be());
+            return 
+        }
+        let reg = match reg_id {
+            "A" => &mut self.reg_af[0..8],
+            "B" => &mut self.reg_bc[0..8],
+            "C" => &mut self.reg_bc[8..16],
+            "D" => &mut self.reg_de[0..8],
+            "E" => &mut self.reg_de[8..16],
+            "H" => &mut self.reg_hl[0..8],
+            "L" => &mut self.reg_hl[8..16],
+              _ => panic!("Unknown register {} used.", reg_id)
+        };
+        reg.set(7 - bit, false);
+    }
+
+    fn handle_interrupts(&mut self) {
+        if !self.ime {
+            return;
+        }
+
+        let ie_val = self.bus.read(0xFFFF);
+        let if_val = self.bus.read(0xFF0F);
+        let mut ie = bitarr!(u8, Msb0; 0; 8);
+        ie.store_be(ie_val);
+        let mut r#if = bitarr!(u8, Msb0; 0; 8);
+        r#if.store_be(if_val);
+        for i in 0..5 {
+            let bit = 7 - i;
+            if ie[bit] && r#if[bit] {
+                self.ime = false;
+                r#if.set(bit, false);
+                self.bus.write(0xFF0F, r#if.load_be());
+                self.push(self.pc);
+                self.pc = 0x40 + (0x08 * i) as u16;
+                return;
+            }
+        }
     }
 
     /*fn decrement_register(&mut self, reg_id: &str) {*/

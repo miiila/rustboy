@@ -26,7 +26,7 @@ pub struct Bus {
     vram: ram::Ram,
     rom: Box<[u8]>,
     io: io::IO,
-    ie: bool,
+    ie: u8,
     r#if: u8,
 }
 
@@ -37,7 +37,7 @@ impl Bus {
             rom,
             hram,
             vram,
-            ie: false,
+            ie: 0,
             r#if: 0,
             io: io::IO::new()
         }
@@ -61,7 +61,7 @@ impl Bus {
             return self.vram.read(ram_addr.into());
         }
         if addr == IE {
-           return self.ie.into(); 
+            return self.ie;
         }
 
         if addr == IF {
@@ -96,7 +96,7 @@ impl Bus {
             return
         }
         if addr == IE {
-            self.ie = value == 1;
+            self.ie = value;
             return
         }
         if addr == IF {
